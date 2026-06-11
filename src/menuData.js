@@ -12,24 +12,21 @@ export const menuCategories = [
         name: "Turmeric Powder",
         tamilName: "மஞ்சள் தூள்",
         price: 280,
-        image:
-          "https://images.unsplash.com/photo-1615485500704-8e990f9900f7?auto=format&fit=crop&w=900&q=80",
+        image: "/turmeric.jpg",
       },
       {
         id: 2,
         name: "Chili Powder",
         tamilName: "மிளகாய்த் தூள்",
         price: 280,
-        image:
-          "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?auto=format&fit=crop&w=900&q=80",
+        image: "/redchill.png",
       },
       {
         id: 3,
         name: "Coriander Powder",
         tamilName: "மல்லித் தூள்",
         price: 220,
-        image:
-          "https://images.unsplash.com/photo-1607877742574-a15a9ecdf5c4?auto=format&fit=crop&w=900&q=80",
+        image: "/coriander.jpg",
       },
       {
         id: 4,
@@ -94,16 +91,14 @@ export const menuCategories = [
         name: "Idli Podi / Lentil Podi",
         tamilName: "இட்லி பொடி / பருப்புப் பொடி",
         price: 350,
-        image:
-          "https://images.unsplash.com/photo-1630409351217-bc4fa6422075?auto=format&fit=crop&w=900&q=80",
+        image: "/idlipodi.jpg",
       },
       {
         id: 9,
         name: "Curry Leaf Podi",
         tamilName: "கருவேப்பிலை பொடி",
         price: 400,
-        image:
-          "https://images.unsplash.com/photo-1628557044797-f21a177c37ec?auto=format&fit=crop&w=900&q=80",
+        image: "/curryleafpodi.jpg",
       },
     ],
   },
@@ -121,24 +116,21 @@ export const menuCategories = [
         tamilName: "20 வகை தானிய சத்துமாவு",
         price: 250,
         description: "20 types of millets",
-        image:
-          "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?auto=format&fit=crop&w=900&q=80",
+        image: "/healthmix.jpg",
       },
       {
         id: 11,
         name: "Fiber & Iron Rich Health Mix",
         tamilName: "நார்ச்சத்து & இரும்புச்சத்து மாவு",
         price: 400,
-        image:
-          "https://images.unsplash.com/photo-1518977956812-cd3dbadaaf31?auto=format&fit=crop&w=900&q=80",
+        image: "/fiberhealthmix.jpg",
       },
       {
         id: 12,
         name: "Ready-to-use Bajji Mix",
         tamilName: "உடனடி பஜ்ஜி மாவு",
         price: 200,
-        image:
-          "https://images.unsplash.com/photo-1599487488170-d11ec9c172f0?auto=format&fit=crop&w=900&q=80",
+        image: "/bajji.png",
       },
     ],
   },

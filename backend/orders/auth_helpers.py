@@ -64,14 +64,17 @@ def register_user(data):
     if phone and not PHONE_PATTERN.match(phone):
         return None, "Invalid phone number format."
 
-    user = User.objects.create_user(
-        username=username,
-        email=email,
-        password=password,
-        first_name=name[:120],
-    )
-    UserProfile.objects.create(user=user, phone=phone, address=str(data.get("address", "")).strip())
-    return user, None
+    try:
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name=name[:120],
+        )
+        UserProfile.objects.create(user=user, phone=phone, address=str(data.get("address", "")).strip())
+        return user, None
+    except Exception as e:
+        return None, f"Failed to create user: {str(e)}"
 
 
 def login_user(data):

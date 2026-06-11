@@ -90,11 +90,27 @@ class CustomerOrder(models.Model):
     ]
 
     PAYMENT_COD = "cod"
+    PAYMENT_CARD = "card"
+    PAYMENT_NETBANKING = "netbanking"
+    PAYMENT_UPI = "upi"
+    PAYMENT_WALLET = "wallet"
     PAYMENT_ONLINE = "online"
     PAYMENT_METHOD_CHOICES = [
         (PAYMENT_COD, "Cash on Delivery"),
+        (PAYMENT_CARD, "Debit / Credit Card"),
+        (PAYMENT_NETBANKING, "Net Banking"),
+        (PAYMENT_UPI, "UPI"),
+        (PAYMENT_WALLET, "Payment Apps"),
         (PAYMENT_ONLINE, "Online Payment"),
     ]
+
+    ONLINE_PAYMENT_METHODS = {
+        PAYMENT_CARD,
+        PAYMENT_NETBANKING,
+        PAYMENT_UPI,
+        PAYMENT_WALLET,
+        PAYMENT_ONLINE,
+    }
 
     PAYMENT_PENDING = "pending"
     PAYMENT_PAID = "paid"
@@ -111,6 +127,7 @@ class CustomerOrder(models.Model):
     order_number = models.CharField(max_length=16, unique=True, default=make_order_number)
     customer_name = models.CharField(max_length=120)
     customer_phone = models.CharField(max_length=30)
+    customer_email = models.EmailField(blank=True)
     customer_address = models.TextField()
     customer_notes = models.TextField(blank=True)
     language = models.CharField(max_length=8, default="en")
@@ -118,6 +135,8 @@ class CustomerOrder(models.Model):
     order_total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     payment_method = models.CharField(max_length=16, choices=PAYMENT_METHOD_CHOICES, default=PAYMENT_COD)
     payment_status = models.CharField(max_length=16, choices=PAYMENT_STATUS_CHOICES, default=PAYMENT_PENDING)
+    razorpay_order_id = models.CharField(max_length=100, blank=True)
+    razorpay_payment_id = models.CharField(max_length=100, blank=True)
     tracking_pin = models.CharField(max_length=6, default=make_tracking_pin)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

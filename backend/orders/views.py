@@ -5,8 +5,9 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.core.mail import send_mail
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -64,6 +65,18 @@ def category_payload(category):
     }
 
 
+def payment_payload(payment):
+    return {
+        "id": payment.id,
+        "method": payment.method,
+        "status": payment.status,
+        "amount": float(payment.amount),
+        "razorpay_order_id": payment.razorpay_order_id,
+        "razorpay_payment_id": payment.razorpay_payment_id,
+        "created_at": payment.created_at.isoformat(),
+    }
+
+
 def order_payload(order, include_sensitive=False):
     payload = {
         "order_number": order.order_number,
@@ -74,6 +87,7 @@ def order_payload(order, include_sensitive=False):
         "payment_status": order.payment_status,
         "created_at": order.created_at.isoformat(),
         "updated_at": order.updated_at.isoformat(),
+        "user_id": order.user_id,
         "items": [
             {
                 "product_name": item.product_name,
@@ -84,6 +98,7 @@ def order_payload(order, include_sensitive=False):
             }
             for item in order.items.all()
         ],
+        "payments": [payment_payload(payment) for payment in order.payments.all()],
         "events": [
             {
                 "status": event.status,
@@ -113,8 +128,6 @@ def parse_body(request):
 
 
 def require_admin(request):
-    if request.headers.get("X-Admin-Pin") == settings.ADMIN_PIN:
-        return True
     user = get_token_user(request)
     return bool(user and user.is_staff)
 
@@ -123,7 +136,146 @@ def sanitize_text(value, max_length=500):
     return str(value or "").strip()[:max_length]
 
 
-def validate_order_items(items):
+def send_order_receipt(order):
+    """Send order receipt email to customer and notification to admin."""
+    if not order.customer_email:
+        return
+
+    items_text = "\n".join(
+        f"  - {item.product_name} x {item.quantity_kg} kg = Rs.{item.line_total:.2f}"
+        for item in order.items.all()
+    )
+
+    customer_subject = f"Order Received – {order.order_number} | ANNAI HEALTH MASALA"
+    customer_body = f"""Dear {order.customer_name},
+
+Thank you for your order! Here is your receipt.
+
+Order Number : {order.order_number}
+Tracking PIN : {order.tracking_pin}
+Date         : {order.created_at.strftime('%d %b %Y, %I:%M %p')}
+
+Items Ordered:
+{items_text}
+
+Order Total  : Rs.{order.order_total:.2f}
+Payment      : {order.get_payment_method_display()}
+Status       : {order.get_payment_status_display()}
+
+Delivery Address:
+{order.customer_address}
+
+You can track your order using Order Number + Phone or Tracking PIN.
+
+For any queries, call us:
+70104 82463 | 83448 80228
+
+Annai Health Foods,
+Madakkudi, Pallividai, Samayapuram, Trichy-621 112
+FSSAI Lic. No.: 22420308000104
+
+Thank you for choosing ANNAI HEALTH MASALA!"""
+
+    try:
+        send_mail(customer_subject, customer_body, settings.DEFAULT_FROM_EMAIL, [order.customer_email], fail_silently=True)
+    except Exception:
+        pass
+
+    # Notify admin
+    if settings.ADMIN_EMAIL:
+        admin_subject = f"New Order {order.order_number} – Rs.{order.order_total:.2f}"
+        admin_body = f"""New order received.
+
+Order  : {order.order_number}
+Name   : {order.customer_name}
+Phone  : {order.customer_phone}
+Email  : {order.customer_email}
+Total  : Rs.{order.order_total:.2f}
+Method : {order.get_payment_method_display()}
+
+Items:
+{items_text}
+
+Address: {order.customer_address}"""
+        try:
+            send_mail(admin_subject, admin_body, settings.DEFAULT_FROM_EMAIL, [settings.ADMIN_EMAIL], fail_silently=True)
+        except Exception:
+            pass
+
+
+def send_payment_confirmation(order):
+    """Send payment confirmed receipt to customer."""
+    if not order.customer_email:
+        return
+
+    items_text = "\n".join(
+        f"  - {item.product_name} x {item.quantity_kg} kg = Rs.{item.line_total:.2f}"
+        for item in order.items.all()
+    )
+
+    subject = f"Payment Confirmed \u2013 {order.order_number} | ANNAI HEALTH MASALA"
+    body = f"""Dear {order.customer_name},
+
+Your payment has been received and confirmed. Here is your receipt.
+
+Order Number  : {order.order_number}
+Tracking PIN  : {order.tracking_pin}
+Date          : {order.created_at.strftime('%d %b %Y, %I:%M %p')}
+
+Items Ordered:
+{items_text}
+
+Order Total   : Rs.{order.order_total:.2f}
+Payment Mode  : {order.get_payment_method_display()}
+Payment Status: PAID
+
+Delivery Address:
+{order.customer_address}
+
+Your order is now being processed. We will notify you at every step.
+
+For queries:
+  Phone : 70104 82463 | 83448 80228
+  Visit : Annai Health Foods, Madakkudi,
+          Pallividai, Samayapuram, Trichy-621 112
+
+FSSAI Lic. No.: 22420308000104
+
+Thank you for choosing ANNAI HEALTH MASALA!"""
+    try:
+        send_mail(subject, body, settings.DEFAULT_FROM_EMAIL,
+                  [order.customer_email], fail_silently=True)
+    except Exception:
+        pass
+
+def send_status_update_email(order, message):
+    """Send order status update email to customer."""
+    if not order.customer_email:
+        return
+    subject = f"Order Update \u2013 {order.order_number} | ANNAI HEALTH MASALA"
+    body = f"""Dear {order.customer_name},
+
+Here is an update on your order.
+
+Order Number : {order.order_number}
+Current Status: {order.get_status_display()}
+Payment Status: {order.get_payment_status_display()}
+
+Message from us:
+{message}
+
+Track your order anytime using Order Number + Phone or Tracking PIN: {order.tracking_pin}
+
+For queries: 70104 82463 | 83448 80228
+Annai Health Foods, Madakkudi, Pallividai, Samayapuram, Trichy-621 112
+FSSAI Lic. No.: 22420308000104"""
+    try:
+        send_mail(subject, body, settings.DEFAULT_FROM_EMAIL,
+                  [order.customer_email], fail_silently=True)
+    except Exception:
+        pass
+
+
     if not items:
         return [], Decimal("0"), None
 
@@ -166,13 +318,109 @@ def razorpay_client():
         return None
     try:
         import razorpay
-
         return razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
     except ImportError:
         return None
 
 
-def create_razorpay_order(order):
+@csrf_exempt
+def razorpay_order_view(request):
+    """POST /api/payments/create-order/ — create Razorpay order from server-side amount."""
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "POST":
+        return json_response({"error": "POST required"}, status=405)
+
+    data = parse_body(request)
+    annai_order_number = sanitize_text(data.get("annai_order_number"))
+    if not annai_order_number:
+        return json_response({"error": "annai_order_number required"}, status=400)
+
+    order = CustomerOrder.objects.filter(order_number=annai_order_number).first()
+    if not order:
+        return json_response({"error": "Order not found"}, status=404)
+
+    # Amount always comes from DB — never from client
+    amount_paise = int(order.order_total * 100)
+    if amount_paise <= 0 or amount_paise > 100000000:
+        return json_response({"error": "Invalid order amount"}, status=400)
+
+    client = razorpay_client()
+    if not client:
+        return json_response({"error": "Online payment not configured"}, status=503)
+
+    try:
+        import razorpay as _rzp
+        rz_order = client.order.create({
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": annai_order_number,
+            "notes": {"shop": "Annai Health Masala"},
+            "payment_capture": 1,
+        })
+    except Exception as e:
+        return json_response({"error": f"Gateway error: {e}"}, status=502)
+
+    # Save razorpay_order_id on CustomerOrder
+    order.razorpay_order_id = rz_order["id"]
+    order.save(update_fields=["razorpay_order_id", "updated_at"])
+
+    # Also update or create corresponding Payment record
+    Payment.objects.filter(order=order).update(
+        razorpay_order_id=rz_order["id"]
+    )
+
+    return json_response({"razorpay_order_id": rz_order["id"], "amount": amount_paise})
+
+
+@csrf_exempt
+def webhook(request):
+    """POST /api/payments/webhook/ — Razorpay event webhook."""
+    if request.method != "POST":
+        return json_response({"error": "POST required"}, status=405)
+
+    sig = request.headers.get("X-Razorpay-Signature", "")
+    secret = settings.RAZORPAY_KEY_SECRET
+    if not secret:
+        return json_response({"status": "ok"})
+
+    import hmac as _hmac, hashlib as _hashlib
+    expected = _hmac.new(secret.encode(), request.body, _hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, sig):
+        return json_response({"error": "Invalid signature"}, status=400)
+
+    try:
+        event = json.loads(request.body)
+    except Exception:
+        return json_response({"status": "ok"})
+
+    if event.get("event") == "payment.captured":
+        rz_order_id = (
+            event.get("payload", {})
+            .get("payment", {})
+            .get("entity", {})
+            .get("order_id", "")
+        )
+        rz_payment_id = (
+            event.get("payload", {})
+            .get("payment", {})
+            .get("entity", {})
+            .get("id", "")
+        )
+        if rz_order_id:
+            CustomerOrder.objects.filter(razorpay_order_id=rz_order_id).update(
+                payment_status=CustomerOrder.PAYMENT_PAID,
+                razorpay_payment_id=rz_payment_id,
+            )
+            Payment.objects.filter(razorpay_order_id=rz_order_id).update(
+                status=CustomerOrder.PAYMENT_PAID,
+                razorpay_payment_id=rz_payment_id,
+            )
+
+    return json_response({"status": "ok"})
+
+
+def create_razorpay_order(order, payment_method=CustomerOrder.PAYMENT_ONLINE):
     client = razorpay_client()
     if not client:
         return None, "Online payment is not configured."
@@ -181,33 +429,41 @@ def create_razorpay_order(order):
     if amount_paise < 100:
         return None, "Order total is too low for online payment."
 
-    razorpay_order = client.order.create(
-        {
+    stored_method = payment_method if payment_method in CustomerOrder.ONLINE_PAYMENT_METHODS else CustomerOrder.PAYMENT_ONLINE
+
+    try:
+        razorpay_order = client.order.create(
+            {
+                "amount": amount_paise,
+                "currency": "INR",
+                "receipt": order.order_number,
+                "notes": {"order_number": order.order_number, "payment_method": stored_method},
+            }
+        )
+        payment = Payment.objects.create(
+            order=order,
+            method=stored_method,
+            status=CustomerOrder.PAYMENT_PENDING,
+            amount=order.order_total,
+            razorpay_order_id=razorpay_order["id"],
+        )
+        return {
+            "razorpay_order_id": razorpay_order["id"],
+            "razorpay_key_id": settings.RAZORPAY_KEY_ID,
             "amount": amount_paise,
             "currency": "INR",
-            "receipt": order.order_number,
-            "notes": {"order_number": order.order_number},
-        }
-    )
-    payment = Payment.objects.create(
-        order=order,
-        method=CustomerOrder.PAYMENT_ONLINE,
-        status=CustomerOrder.PAYMENT_PENDING,
-        amount=order.order_total,
-        razorpay_order_id=razorpay_order["id"],
-    )
-    return {
-        "razorpay_order_id": razorpay_order["id"],
-        "razorpay_key_id": settings.RAZORPAY_KEY_ID,
-        "amount": amount_paise,
-        "currency": "INR",
-        "payment_id": payment.id,
-    }, None
+            "payment_id": payment.id,
+            "payment_method": stored_method,
+        }, None
+    except Exception as e:
+        return None, f"Payment gateway error: {str(e)}"
 
 
 def menu(request):
     if request.method == "OPTIONS":
         return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
     categories = Category.objects.prefetch_related("products").all()
     return json_response({"categories": [category_payload(category) for category in categories]})
 
@@ -215,6 +471,8 @@ def menu(request):
 def payment_config(_request):
     if _request.method == "OPTIONS":
         return options_response()
+    if _request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
     client = razorpay_client()
     return json_response(
         {
@@ -288,7 +546,8 @@ def create_order(request):
     customer = data.get("customer", {})
     items = data.get("items", [])
     payment_method = data.get("payment_method", CustomerOrder.PAYMENT_COD)
-    if payment_method not in {CustomerOrder.PAYMENT_COD, CustomerOrder.PAYMENT_ONLINE}:
+    valid_methods = {choice[0] for choice in CustomerOrder.PAYMENT_METHOD_CHOICES}
+    if payment_method not in valid_methods:
         return json_response({"error": "Invalid payment method."}, status=400)
 
     required_fields = ["name", "phone", "address"]
@@ -301,7 +560,8 @@ def create_order(request):
     if item_error:
         return json_response({"error": item_error}, status=400)
 
-    if payment_method == CustomerOrder.PAYMENT_ONLINE and not razorpay_client():
+    is_online = payment_method in CustomerOrder.ONLINE_PAYMENT_METHODS
+    if is_online and not razorpay_client():
         return json_response({"error": "Online payment is not available. Choose Cash on Delivery."}, status=400)
 
     auth_user = get_token_user(request)
@@ -311,6 +571,7 @@ def create_order(request):
             user=auth_user,
             customer_name=sanitize_text(customer["name"], 120),
             customer_phone=sanitize_text(customer["phone"], 30),
+            customer_email=sanitize_text(customer.get("email", ""), 254),
             customer_address=sanitize_text(customer["address"], 1000),
             customer_notes=sanitize_text(customer.get("notes"), 2000),
             language=data.get("language", "en"),
@@ -327,7 +588,7 @@ def create_order(request):
                 quantity_kg=item["quantity_kg"],
                 unit_price=item["unit_price"],
             )
-        if payment_method == CustomerOrder.PAYMENT_COD:
+        if not is_online:
             Payment.objects.create(
                 order=order,
                 method=CustomerOrder.PAYMENT_COD,
@@ -341,24 +602,29 @@ def create_order(request):
         )
 
     response_data = {"order": order_payload(order, include_sensitive=True)}
-    if payment_method == CustomerOrder.PAYMENT_ONLINE:
-        razorpay_data, payment_error = create_razorpay_order(order)
+    if is_online:
+        razorpay_data, payment_error = create_razorpay_order(order, payment_method)
         if payment_error:
             order.delete()
             return json_response({"error": payment_error}, status=400)
         response_data["payment"] = razorpay_data
 
+    # Send receipt email to customer and notification to admin
+    send_order_receipt(order)
     return json_response(response_data, status=201)
 
 
 def order_detail(request, order_number):
     if request.method == "OPTIONS":
         return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
 
     phone = sanitize_text(request.GET.get("phone"))
     pin = sanitize_text(request.GET.get("pin"))
     order = get_object_or_404(
-        CustomerOrder.objects.prefetch_related("items", "events"), order_number=order_number
+        CustomerOrder.objects.prefetch_related("items", "events", "payments"),
+        order_number=order_number,
     )
 
     auth_user = get_token_user(request)
@@ -397,6 +663,10 @@ def verify_payment(request):
     if not payment:
         return json_response({"error": "Payment record not found."}, status=404)
 
+    if payment.status == CustomerOrder.PAYMENT_PAID:
+        order = CustomerOrder.objects.prefetch_related("items", "events").get(pk=order.pk)
+        return json_response({"order": order_payload(order, include_sensitive=True)})
+
     if not settings.RAZORPAY_KEY_SECRET:
         return json_response({"error": "Payment verification is not configured."}, status=400)
 
@@ -419,7 +689,8 @@ def verify_payment(request):
     payment.razorpay_signature = razorpay_signature
     payment.save(update_fields=["status", "razorpay_payment_id", "razorpay_signature"])
     order.payment_status = CustomerOrder.PAYMENT_PAID
-    order.save(update_fields=["payment_status", "updated_at"])
+    order.razorpay_payment_id = razorpay_payment_id
+    order.save(update_fields=["payment_status", "razorpay_payment_id", "updated_at"])
     OrderStatusEvent.objects.create(
         order=order,
         status=order.status,
@@ -429,23 +700,145 @@ def verify_payment(request):
     return json_response({"order": order_payload(order, include_sensitive=True)})
 
 
+def my_orders(request):
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
+    user, error_response = require_user(request)
+    if error_response:
+        return error_response
+    orders = (
+        CustomerOrder.objects.filter(user=user)
+        .prefetch_related("items", "events", "payments")
+        .order_by("-created_at")[:50]
+    )
+    return json_response(
+        {"orders": [order_payload(order, include_sensitive=True) for order in orders]}
+    )
+
+
+def admin_dashboard(request):
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
+    if not require_admin(request):
+        return json_response({"error": "Invalid admin credentials."}, status=403)
+
+    total_orders = CustomerOrder.objects.count()
+    active_orders = CustomerOrder.objects.exclude(
+        status__in=[CustomerOrder.STATUS_DELIVERED, CustomerOrder.STATUS_CANCELLED]
+    ).count()
+    total_users = User.objects.filter(is_staff=False).count()
+    total_revenue = (
+        Payment.objects.filter(status=CustomerOrder.PAYMENT_PAID).aggregate(total=Sum("amount"))["total"]
+        or 0
+    )
+    pending_payments = CustomerOrder.objects.filter(payment_status=CustomerOrder.PAYMENT_PENDING).count()
+
+    orders_by_status = {
+        status: CustomerOrder.objects.filter(status=status).count()
+        for status, _ in CustomerOrder.STATUS_CHOICES
+    }
+
+    line_total = ExpressionWrapper(
+        F("quantity_kg") * F("unit_price"),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+    product_sales = (
+        OrderItem.objects.values("product_name")
+        .annotate(
+            total_kg=Sum("quantity_kg"),
+            revenue=Sum(line_total),
+            order_count=Count("order_id", distinct=True),
+        )
+        .order_by("-revenue")[:15]
+    )
+
+    recent_orders = (
+        CustomerOrder.objects.prefetch_related("items")
+        .order_by("-created_at")[:12]
+    )
+
+    return json_response(
+        {
+            "stats": {
+                "total_orders": total_orders,
+                "active_orders": active_orders,
+                "total_users": total_users,
+                "total_revenue": float(total_revenue),
+                "pending_payments": pending_payments,
+            },
+            "orders_by_status": orders_by_status,
+            "product_sales": [
+                {
+                    "product_name": row["product_name"],
+                    "total_kg": float(row["total_kg"] or 0),
+                    "revenue": float(row["revenue"] or 0),
+                    "order_count": row["order_count"],
+                }
+                for row in product_sales
+            ],
+            "recent_orders": [
+                order_payload(order, include_sensitive=True) for order in recent_orders
+            ],
+        }
+    )
+
+
 def admin_orders(request):
     if request.method == "OPTIONS":
         return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
     if not require_admin(request):
         return json_response({"error": "Invalid admin credentials."}, status=403)
-    orders = CustomerOrder.objects.prefetch_related("items", "events").all()[:100]
+    orders = (
+        CustomerOrder.objects.prefetch_related("items", "events", "payments")
+        .all()[:100]
+    )
     return json_response({"orders": [order_payload(order, include_sensitive=True) for order in orders]})
+
+
+def admin_payments(request):
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
+    if not require_admin(request):
+        return json_response({"error": "Invalid admin credentials."}, status=403)
+
+    payments = (
+        Payment.objects.select_related("order")
+        .order_by("-created_at")[:100]
+    )
+    return json_response(
+        {
+            "payments": [
+                {
+                    **payment_payload(payment),
+                    "order_number": payment.order.order_number,
+                    "customer_name": payment.order.customer_name,
+                    "customer_phone": payment.order.customer_phone,
+                }
+                for payment in payments
+            ]
+        }
+    )
 
 
 def admin_users(request):
     if request.method == "OPTIONS":
         return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
     if not require_admin(request):
         return json_response({"error": "Invalid admin credentials."}, status=403)
 
     users = (
-        User.objects.annotate(order_count=Count("orders"))
+        User.objects.filter(is_staff=False)
+        .annotate(order_count=Count("orders"))
         .select_related("profile")
         .order_by("-date_joined")[:200]
     )
@@ -460,6 +853,86 @@ def admin_users(request):
             ]
         }
     )
+
+
+def admin_user_detail(request, user_id):
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "GET":
+        return json_response({"error": "GET required"}, status=405)
+    if not require_admin(request):
+        return json_response({"error": "Invalid admin credentials."}, status=403)
+
+    user = get_object_or_404(User.objects.select_related("profile"), pk=user_id)
+    orders = (
+        CustomerOrder.objects.filter(user=user)
+        .prefetch_related("items", "events", "payments")
+        .order_by("-created_at")
+    )
+    payments = Payment.objects.filter(order__user=user).select_related("order").order_by("-created_at")
+    return json_response(
+        {
+            "user": {**user_payload(user), "order_count": orders.count()},
+            "orders": [order_payload(order, include_sensitive=True) for order in orders],
+            "payments": [
+                {
+                    **payment_payload(payment),
+                    "order_number": payment.order.order_number,
+                }
+                for payment in payments
+            ],
+        }
+    )
+
+
+@csrf_exempt
+def admin_notify(request, order_number):
+    if request.method == "OPTIONS":
+        return options_response()
+    if request.method != "POST":
+        return json_response({"error": "POST required"}, status=405)
+    if not require_admin(request):
+        return json_response({"error": "Invalid admin credentials."}, status=403)
+
+    data = parse_body(request)
+    message = sanitize_text(data.get("message"), 500)
+    payment_status = data.get("payment_status")
+    valid_payment_statuses = {choice[0] for choice in CustomerOrder.PAYMENT_STATUS_CHOICES}
+
+    # message is optional when only updating payment status
+    if not message and not payment_status:
+        return json_response({"error": "Message or payment_status is required."}, status=400)
+
+    order = get_object_or_404(CustomerOrder, order_number=order_number)
+
+    if payment_status:
+        if payment_status not in valid_payment_statuses:
+            return json_response({"error": "Invalid payment status."}, status=400)
+        order.payment_status = payment_status
+        order.save(update_fields=["payment_status", "updated_at"])
+        latest_payment = order.payments.order_by("-created_at").first()
+        if latest_payment:
+            latest_payment.status = payment_status
+            latest_payment.save(update_fields=["status"])
+        if not message:
+            message = "Your payment has been received. Thank you!"
+        if payment_status == CustomerOrder.PAYMENT_PAID:
+            # Reload order with items for receipt
+            order.refresh_from_db()
+            send_payment_confirmation(order)
+
+    OrderStatusEvent.objects.create(
+        order=order,
+        status=order.status,
+        message=message,
+    )
+    # Always send email notification to customer
+    send_status_update_email(order, message)
+    order = get_object_or_404(
+        CustomerOrder.objects.prefetch_related("items", "events", "payments"),
+        order_number=order_number,
+    )
+    return json_response({"order": order_payload(order, include_sensitive=True)})
 
 
 @csrf_exempt
@@ -480,12 +953,17 @@ def update_order_status(request, order_number):
     order = get_object_or_404(CustomerOrder, order_number=order_number)
     order.status = status
     order.save(update_fields=["status", "updated_at"])
+    notify_message = (
+        sanitize_text(data.get("message"), 500)
+        or f"Your order status is now {order.get_status_display()}."
+    )
     OrderStatusEvent.objects.create(
         order=order,
         status=status,
-        message=sanitize_text(data.get("message"), 500)
-        or f"Your order status is now {order.get_status_display()}.",
+        message=notify_message,
     )
+    # Send email notification to customer
+    send_status_update_email(order, notify_message)
     order = get_object_or_404(
         CustomerOrder.objects.prefetch_related("items", "events"), order_number=order_number
     )
