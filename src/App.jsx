@@ -60,41 +60,11 @@ const paymentMethodLabels = {
 };
 
 const PAYMENT_METHODS = [
-  {
-    id: "cod",
-    label: "Cash on Delivery",
-    description: "Pay cash when order is delivered",
-    icon: Banknote,
-    online: false,
-  },
-  {
-    id: "upi",
-    label: "UPI",
-    description: "Google Pay, PhonePe, Paytm UPI",
-    icon: Smartphone,
-    online: true,
-  },
-  {
-    id: "wallet",
-    label: "Payment Apps",
-    description: "PhonePe, Paytm, Amazon Pay wallets",
-    icon: Wallet,
-    online: true,
-  },
-  {
-    id: "card",
-    label: "Debit / Credit Card",
-    description: "Visa, Mastercard, RuPay",
-    icon: CreditCard,
-    online: true,
-  },
-  {
-    id: "netbanking",
-    label: "Net Banking",
-    description: "All major Indian banks",
-    icon: Landmark,
-    online: true,
-  },
+  { id: "cod",        label: "Cash on Delivery",    description: "Pay cash when order is delivered",      icon: Banknote,  online: false },
+  { id: "upi",        label: "UPI",                  description: "Google Pay, PhonePe, Paytm UPI",        icon: Smartphone, online: true },
+  { id: "wallet",     label: "Payment Apps",         description: "PhonePe, Paytm, Amazon Pay wallets",   icon: Wallet,    online: true },
+  { id: "card",       label: "Debit / Credit Card",  description: "Visa, Mastercard, RuPay",               icon: CreditCard, online: true },
+  { id: "netbanking", label: "Net Banking",          description: "All major Indian banks",                icon: Landmark,  online: true },
 ];
 
 const ONLINE_METHODS = new Set(["upi", "wallet", "card", "netbanking", "online"]);
@@ -102,6 +72,7 @@ const ONLINE_METHODS = new Set(["upi", "wallet", "card", "netbanking", "online"]
 function isOnlinePayment(method) {
   return ONLINE_METHODS.has(method);
 }
+
 function loadRazorpayScript() {
   return new Promise((resolve) => {
     if (window.Razorpay) { resolve(true); return; }
@@ -164,8 +135,8 @@ async function handleRazorpayPayment({ annaiOrder, customerName, customerPhone, 
           }),
         });
         const vdata = await vres.json();
-        if (vdata.status === "verified") onSuccess(response.razorpay_payment_id);
-        else onFailure("Payment verification failed. Contact support.");
+        if (vres.ok && vdata.order) onSuccess(response.razorpay_payment_id);
+        else onFailure(vdata.error || "Payment verification failed. Contact support.");
       } catch {
         onFailure("Payment verification error. Contact support.");
       }
@@ -192,12 +163,31 @@ function formatMoney(value) {
 
 function formatDate(value) {
   return new Date(value).toLocaleString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    day: "numeric", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit",
   });
+}
+
+async function downloadAdminFile(url, filename, headers, expectedMimePart) {
+  const response = await fetch(url, { headers });
+  if (!response.ok) {
+    let message = "Export failed";
+    try { const data = await response.json(); message = data.error || message; } catch { /* non-JSON */ }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const contentType = blob.type || response.headers.get("Content-Type") || "";
+  if (expectedMimePart && !contentType.includes(expectedMimePart)) {
+    throw new Error("Server returned an unexpected file type. Please log in again and retry.");
+  }
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => { URL.revokeObjectURL(objectUrl); link.remove(); }, 2000);
 }
 
 function App() {
@@ -242,41 +232,36 @@ function App() {
   const adminHeaders = useCallback(() => authHeaders(), [authHeaders]);
 
   useEffect(() => {
-    // build id->image map from local menuData so local images always override API
     const localImageMap = {};
     menuCategories.forEach(cat => cat.products.forEach(p => { if (p.image) localImageMap[p.id] = p.image; }));
 
     fetch(`${API_BASE}/menu/`)
-      .then((response) => response.json())
+      .then((r) => r.json())
       .then((data) => {
         if (Array.isArray(data.categories) && data.categories.length) {
-          const merged = data.categories.map(cat => ({
+          setCategories(data.categories.map(cat => ({
             ...cat,
-            products: cat.products.map(p => ({
-              ...p,
-              image: localImageMap[p.id] || p.image,
-            })),
-          }));
-          setCategories(merged);
+            products: cat.products.map(p => ({ ...p, image: localImageMap[p.id] || p.image })),
+          })));
         }
         setApiOnline(true);
       })
       .catch(() => setApiOnline(false));
 
     fetch(`${API_BASE}/payment/config/`)
-      .then((response) => response.json())
+      .then((r) => r.json())
       .then((data) => setPaymentOnline(Boolean(data.online_enabled)))
       .catch(() => setPaymentOnline(false));
   }, []);
 
   useEffect(() => {
     if (auth?.user) {
-      setCustomer((value) => ({
-        name: auth.user.name || value.name,
-        phone: auth.user.phone || value.phone,
-        email: auth.user.email || value.email,
-        address: auth.user.address || value.address,
-        notes: value.notes,
+      setCustomer((v) => ({
+        name: auth.user.name || v.name,
+        phone: auth.user.phone || v.phone,
+        email: auth.user.email || v.email,
+        address: auth.user.address || v.address,
+        notes: v.notes,
       }));
     }
   }, [auth?.user?.id]);
@@ -289,24 +274,15 @@ function App() {
       if (trackPin.trim()) params.set("pin", trackPin.trim());
       const query = params.toString() ? `?${params}` : "";
       try {
-        const response = await fetch(`${API_BASE}/orders/${number.trim()}/${query}`, {
-          headers: authHeaders(),
-        });
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({}));
-          throw new Error(err.error || "Not found");
-        }
+        const response = await fetch(`${API_BASE}/orders/${number.trim()}/${query}`, { headers: authHeaders() });
+        if (!response.ok) { const err = await response.json().catch(() => ({})); throw new Error(err.error || "Not found"); }
         const data = await response.json();
         setTrackedOrder(data.order);
         setOrderNumber(number.trim());
         if (showNotice) setNotice("Order status refreshed.");
       } catch (error) {
         let localOrder = null;
-        try {
-          localOrder = JSON.parse(localStorage.getItem(`annai-order-${number.trim()}`) || "null");
-        } catch {
-          localOrder = null;
-        }
+        try { localOrder = JSON.parse(localStorage.getItem(`annai-order-${number.trim()}`) || "null"); } catch { localOrder = null; }
         if (localOrder) {
           setTrackedOrder(localOrder);
           if (showNotice) setNotice("Loaded local demo order.");
@@ -327,81 +303,60 @@ function App() {
   const loadMyOrders = useCallback(async () => {
     if (!auth?.token) return;
     try {
-      const response = await fetch(`${API_BASE}/orders/my/`, { headers: authHeaders() });
-      if (!response.ok) throw new Error("Failed");
-      const data = await response.json();
+      const r = await fetch(`${API_BASE}/orders/my/`, { headers: authHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      const data = await r.json();
       setMyOrders(data.orders || []);
-    } catch {
-      setMyOrders([]);
-    }
+    } catch { setMyOrders([]); }
   }, [auth?.token, authHeaders]);
 
   const loadDashboard = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/admin/dashboard/`, { headers: adminHeaders() });
-      if (!response.ok) throw new Error("Failed");
-      const data = await response.json();
-      setDashboard(data);
-    } catch {
-      setDashboard(null);
-    }
+      const r = await fetch(`${API_BASE}/admin/dashboard/`, { headers: adminHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      setDashboard(await r.json());
+    } catch { setDashboard(null); }
   }, [adminHeaders]);
 
   const loadAdminOrders = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/admin/orders/`, { headers: adminHeaders() });
-      if (!response.ok) throw new Error("Admin failed");
-      const data = await response.json();
+      const r = await fetch(`${API_BASE}/admin/orders/`, { headers: adminHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      const data = await r.json();
       setOrders(data.orders || []);
       setNotice("Orders loaded.");
-    } catch {
-      setOrders([]);
-      setNotice(apiOnline ? "Admin login required." : "API offline.");
-    }
+    } catch { setOrders([]); setNotice(apiOnline ? "Admin login required." : "API offline."); }
   }, [adminHeaders, apiOnline]);
 
   const loadAdminUsers = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/admin/users/`, { headers: adminHeaders() });
-      if (!response.ok) throw new Error("Admin failed");
-      const data = await response.json();
+      const r = await fetch(`${API_BASE}/admin/users/`, { headers: adminHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      const data = await r.json();
       setUsers(data.users || []);
       setNotice("Users loaded.");
-    } catch {
-      setUsers([]);
-      setNotice("Could not load users.");
-    }
+    } catch { setUsers([]); setNotice("Could not load users."); }
   }, [adminHeaders]);
 
   const loadAdminPayments = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/admin/payments/`, { headers: adminHeaders() });
-      if (!response.ok) throw new Error("Admin failed");
-      const data = await response.json();
+      const r = await fetch(`${API_BASE}/admin/payments/`, { headers: adminHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      const data = await r.json();
       setPayments(data.payments || []);
       setNotice("Payments loaded.");
-    } catch {
-      setPayments([]);
-      setNotice("Could not load payments.");
-    }
+    } catch { setPayments([]); setNotice("Could not load payments."); }
   }, [adminHeaders]);
 
-  const loadUserDetail = useCallback(
-    async (userId) => {
-      try {
-        const response = await fetch(`${API_BASE}/admin/users/${userId}/`, {
-          headers: adminHeaders(),
-        });
-        if (!response.ok) throw new Error("Failed");
-        const data = await response.json();
-        setSelectedUser(data);
-        setAdminTab("user-detail");
-      } catch {
-        setNotice("Could not load user details.");
-      }
-    },
-    [adminHeaders],
-  );
+  const loadUserDetail = useCallback(async (userId) => {
+    try {
+      const r = await fetch(`${API_BASE}/admin/users/${userId}/`, { headers: adminHeaders() });
+      if (!r.ok) throw new Error("Failed");
+      const data = await r.json();
+      setSelectedUser(data);
+      setAdminTab("user-detail");
+    } catch { setNotice("Could not load user details."); }
+  }, [adminHeaders]);
 
   function persistAuth(nextAuth) {
     setAuth(nextAuth);
@@ -412,49 +367,29 @@ function App() {
   async function handleRegister(event, form) {
     event.preventDefault();
     try {
-      const response = await fetch(`${API_BASE}/auth/register/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Registration failed");
+      const r = await fetch(`${API_BASE}/auth/register/`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Registration failed");
       persistAuth({ user: data.user, token: data.token });
       setNotice("Account created. Welcome!");
       setView("account");
-    } catch (error) {
-      setNotice(error.message);
-    }
+    } catch (error) { setNotice(error.message); }
   }
 
   async function handleLogin(event, form) {
     event.preventDefault();
     try {
-      const response = await fetch(`${API_BASE}/auth/login/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Login failed");
+      const r = await fetch(`${API_BASE}/auth/login/`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Login failed");
       persistAuth({ user: data.user, token: data.token });
-      setNotice(
-        data.user.is_staff
-          ? `Admin login successful. Welcome, ${data.user.name || data.user.username}.`
-          : `Welcome back, ${data.user.name || data.user.username}!`,
-      );
+      setNotice(data.user.is_staff ? `Admin login successful. Welcome, ${data.user.name || data.user.username}.` : `Welcome back, ${data.user.name || data.user.username}!`);
       setView("account");
-    } catch (error) {
-      setNotice(error.message);
-    }
+    } catch (error) { setNotice(error.message); }
   }
 
   async function handleLogout() {
-    try {
-      await fetch(`${API_BASE}/auth/logout/`, { method: "POST", headers: authHeaders() });
-    } catch {
-      /* offline logout is fine */
-    }
+    try { await fetch(`${API_BASE}/auth/logout/`, { method: "POST", headers: authHeaders() }); } catch { /* offline ok */ }
     persistAuth(null);
     setMyOrders([]);
     setSelectedUser(null);
@@ -464,20 +399,15 @@ function App() {
 
   function addToCart(product) {
     if (!product.price) {
-      setCustomer((value) => ({
-        ...value,
-        notes: `${value.notes ? `${value.notes}\n` : ""}${product.name}: please confirm price.`,
-      }));
+      setCustomer((v) => ({ ...v, notes: `${v.notes ? `${v.notes}\n` : ""}${product.name}: please confirm price.` }));
       setToast({ text: `${product.name} request added to notes.`, type: "info" });
       return;
     }
     setCart((items) => {
-      const existing = items.find((item) => item.id === product.id);
+      const existing = items.find((i) => i.id === product.id);
       if (existing) {
         setToast({ text: `${product.name} quantity updated!`, type: "success" });
-        return items.map((item) =>
-          item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item,
-        );
+        return items.map((i) => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
       setToast({ text: `${product.name} added to cart!`, type: "success" });
       return [...items, { ...product, quantity: 1 }];
@@ -492,61 +422,37 @@ function App() {
   }
 
   function updateQuantity(productId, quantity) {
-    const nextQuantity = Math.max(0.25, Number(quantity) || 0.25);
-    setCart((items) =>
-      items.map((item) => (item.id === productId ? { ...item, quantity: nextQuantity } : item)),
-    );
+    const next = Math.max(0.25, Number(quantity) || 0.25);
+    setCart((items) => items.map((i) => i.id === productId ? { ...i, quantity: next } : i));
   }
 
   function removeItem(productId) {
-    setCart((items) => items.filter((item) => item.id !== productId));
+    setCart((items) => items.filter((i) => i.id !== productId));
   }
 
-async function placeOrder(event) {
+  async function placeOrder(event) {
     event.preventDefault();
-    if (!cart.length && !customer.notes.trim()) {
-      setNotice("Please add at least one item or flour request.");
-      return;
-    }
+    if (!cart.length && !customer.notes.trim()) { setNotice("Please add at least one item or flour request."); return; }
     const payload = {
-      customer,
-      language,
-      payment_method: paymentMethod,
-      items: cart.map((item) => ({
-        product_id: item.id,
-        product_name: item.name,
-        tamil_name: item.tamilName,
-        quantity_kg: item.quantity,
-        unit_price: item.price,
-      })),
+      customer, language, payment_method: paymentMethod,
+      items: cart.map((item) => ({ product_id: item.id, product_name: item.name, tamil_name: item.tamilName, quantity_kg: item.quantity, unit_price: item.price })),
     };
-
     try {
-      const response = await fetch(`${API_BASE}/orders/`, {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(payload),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Order failed");
+      const r = await fetch(`${API_BASE}/orders/`, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(payload) });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Order failed");
 
       let finalOrder = data.order;
       if (isOnlinePayment(paymentMethod) && paymentOnline) {
         await new Promise((resolve, reject) => {
           handleRazorpayPayment({
-            annaiOrder: data.order,
-            customerName: customer.name,
-            customerPhone: customer.phone,
-            authHeaders,
+            annaiOrder: data.order, customerName: customer.name, customerPhone: customer.phone, authHeaders,
             onSuccess: async (paymentId) => {
               finalOrder = { ...data.order, payment_status: "paid", razorpay_payment_id: paymentId };
               setNotice("Payment successful! Your order is confirmed.");
               resolve();
             },
-            onFailure: (msg) => {
-              setNotice(msg || "Payment failed. Try Cash on Delivery.");
-              reject(new Error(msg));
-            },
+            onFailure: (msg) => { setNotice(msg || "Payment failed. Try Cash on Delivery."); reject(new Error(msg)); },
           });
         });
       } else {
@@ -559,7 +465,7 @@ async function placeOrder(event) {
       setTrackPhone(customer.phone);
       setCart([]);
       setShopStep("browse");
-      setCustomer((value) => ({ ...value, notes: "" }));
+      setCustomer((v) => ({ ...v, notes: "" }));
       if (auth?.token) loadMyOrders();
       document.getElementById("track")?.scrollIntoView({ behavior: "smooth" });
     } catch (error) {
@@ -579,48 +485,42 @@ async function placeOrder(event) {
   async function updateStatus(order, status) {
     const message = adminMessage[order.order_number] || `Your order is now ${statusLabels[status]}.`;
     try {
-      const response = await fetch(`${API_BASE}/admin/orders/${order.order_number}/status/`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...adminHeaders() },
+      const r = await fetch(`${API_BASE}/admin/orders/${order.order_number}/status/`, {
+        method: "PATCH", headers: { "Content-Type": "application/json", ...adminHeaders() },
         body: JSON.stringify({ status, message }),
       });
-      if (!response.ok) throw new Error("Update failed");
+      if (!r.ok) throw new Error("Update failed");
       await loadAdminOrders();
       setNotice("Order status updated and customer notified.");
-    } catch {
-      setNotice("Could not update order status.");
-    }
+    } catch { setNotice("Could not update order status."); }
   }
 
   async function sendNotification(order, paymentStatus = null) {
     const message = adminMessage[order.order_number];
-    if (!message?.trim() && !paymentStatus) {
-      setNotice("Write a message before sending.");
-      return;
-    }
+    if (!message?.trim() && !paymentStatus) { setNotice("Write a message before sending."); return; }
     try {
-      const response = await fetch(`${API_BASE}/admin/orders/${order.order_number}/notify/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...adminHeaders() },
+      const r = await fetch(`${API_BASE}/admin/orders/${order.order_number}/notify/`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...adminHeaders() },
         body: JSON.stringify({ message: message || "", payment_status: paymentStatus }),
       });
-      if (!response.ok) throw new Error("Send failed");
+      if (!r.ok) throw new Error("Send failed");
       await loadAdminOrders();
       setAdminMessage((prev) => ({ ...prev, [order.order_number]: "" }));
-      setNotice(paymentStatus === "paid"
-        ? `Payment marked as collected. Receipt sent to customer.`
-        : "Notification sent to customer.");
-    } catch {
-      setNotice("Could not send notification.");
-    }
+      setNotice(paymentStatus === "paid" ? "Payment marked as collected. Receipt sent to customer." : "Notification sent to customer.");
+    } catch { setNotice("Could not send notification."); }
   }
+
+  const handleTrackOrder = (order) => {
+    setView("shop");
+    setOrderNumber(order.order_number);
+    setTrackPhone(order.customer_phone || auth?.user?.phone || "");
+    setTrackedOrder(order);
+    setTimeout(() => document.getElementById("track")?.scrollIntoView({ behavior: "smooth" }), 100);
+  };
 
   const copy = {
     brand: language === "ta" ? "அன்னை ஹெல்த் மசாலா" : "ANNAI HEALTH MASALA",
-    tagline:
-      language === "ta"
-        ? "தரமான மற்றும் ஆரோக்கியமான வீட்டுத் தயாரிப்புகள்"
-        : "Pure, Healthy & Homemade Quality",
+    tagline: language === "ta" ? "தரமான மற்றும் ஆரோக்கியமான வீட்டுத் தயாரிப்புகள்" : "Pure, Healthy & Homemade Quality",
     account: language === "ta" ? "கணக்கு" : "Account",
   };
 
@@ -640,18 +540,13 @@ async function placeOrder(event) {
           </button>
           <div className="nav-actions">
             <button type="button" className={view === "shop" ? "active" : ""} onClick={() => { setView("shop"); if (cartCount) openCart(); }}>
-              <ShoppingCart size={18} />
-              Cart
+              <ShoppingCart size={18} /> Cart
               {cartCount > 0 && <em className="cart-badge">{cartCount}</em>}
             </button>
             <button type="button" onClick={() => { setView("shop"); setShopStep("browse"); document.getElementById("menu")?.scrollIntoView({ behavior: "smooth" }); }}>
               <ShoppingBag size={18} /> Shop
             </button>
-            <button
-              type="button"
-              className={view === "account" ? "active" : ""}
-              onClick={() => setView("account")}
-            >
+            <button type="button" className={view === "account" ? "active" : ""} onClick={() => setView("account")}>
               {auth ? <Users size={18} /> : <LogIn size={18} />}
               {auth ? copy.account : language === "ta" ? "உள்நுழை" : "Login"}
             </button>
@@ -689,22 +584,13 @@ async function placeOrder(event) {
         {view === "shop" && (
           <>
             <section className="section intro-strip">
-              <div>
-                <strong>Shop → Cart → Pay → Track</strong>
-                <span>Full e-commerce flow with COD or online payment.</span>
-              </div>
-              <div>
-                <strong>Live status updates</strong>
-                <span>Grinding, packing, ready, delivered — see every step.</span>
-              </div>
+              <div><strong>Shop → Cart → Pay → Track</strong><span>Full e-commerce flow with COD or online payment.</span></div>
+              <div><strong>Live status updates</strong><span>Grinding, packing, ready, delivered — see every step.</span></div>
             </section>
 
             {shopStep === "browse" && (
               <section className="section" id="menu">
-                <div className="section-heading">
-                  <p>Menu</p>
-                  <h2>Browse & add to cart</h2>
-                </div>
+                <div className="section-heading"><p>Menu</p><h2>Browse & add to cart</h2></div>
                 <div className="category-stack">
                   {categories.map((category) => (
                     <article className="category-band" key={category.id}>
@@ -724,9 +610,7 @@ async function placeOrder(event) {
                               <p>{language === "ta" ? product.tamilDescription || product.description : product.description || "Fresh homemade powder"}</p>
                               <div className="product-footer">
                                 <strong>{product.price ? `₹${product.price}/kg` : "On request"}</strong>
-                                <button type="button" onClick={() => addToCart(product)}>
-                                  <ShoppingBag size={17} /> Add
-                                </button>
+                                <button type="button" onClick={() => addToCart(product)}><ShoppingBag size={17} /> Add</button>
                               </div>
                             </div>
                           </article>
@@ -740,17 +624,10 @@ async function placeOrder(event) {
 
             {shopStep === "cart" && (
               <CartPage
-                cart={cart}
-                cartTotal={cartTotal}
-                removeItem={removeItem}
-                updateQuantity={updateQuantity}
+                cart={cart} cartTotal={cartTotal} removeItem={removeItem} updateQuantity={updateQuantity}
                 onBack={() => setShopStep("browse")}
                 onCheckout={() => {
-                  if (!auth) {
-                    setView("account");
-                    setNotice("Please login or register to place your order.");
-                    return;
-                  }
+                  if (!auth) { setView("account"); setNotice("Please login or register to place your order."); return; }
                   setShopStep("checkout");
                   document.getElementById("checkout")?.scrollIntoView({ behavior: "smooth" });
                 }}
@@ -759,32 +636,22 @@ async function placeOrder(event) {
 
             {shopStep === "checkout" && (
               <CheckoutPage
-                cart={cart}
-                cartTotal={cartTotal}
-                customer={customer}
-                setCustomer={setCustomer}
-                placeOrder={placeOrder}
-                paymentMethod={paymentMethod}
-                setPaymentMethod={setPaymentMethod}
-                paymentOnline={paymentOnline}
-                auth={auth}
+                cart={cart} cartTotal={cartTotal} customer={customer} setCustomer={setCustomer}
+                placeOrder={placeOrder} paymentMethod={paymentMethod} setPaymentMethod={setPaymentMethod}
+                paymentOnline={paymentOnline} auth={auth}
                 onBack={() => setShopStep("cart")}
                 onGoLogin={() => { setView("account"); setNotice("Please login or register to place your order."); }}
               />
             )}
 
             {shopStep === "browse" && (
-            <TrackingPanel
-              orderNumber={orderNumber}
-              setOrderNumber={setOrderNumber}
-              trackPhone={trackPhone}
-              setTrackPhone={setTrackPhone}
-              trackPin={trackPin}
-              setTrackPin={setTrackPin}
-              trackedOrder={trackedOrder}
-              lastTrackingPin={lastTrackingPin}
-              trackOrder={trackOrder}
-            />
+              <TrackingPanel
+                orderNumber={orderNumber} setOrderNumber={setOrderNumber}
+                trackPhone={trackPhone} setTrackPhone={setTrackPhone}
+                trackPin={trackPin} setTrackPin={setTrackPin}
+                trackedOrder={trackedOrder} lastTrackingPin={lastTrackingPin}
+                trackOrder={trackOrder} auth={auth}
+              />
             )}
           </>
         )}
@@ -799,36 +666,15 @@ async function placeOrder(event) {
 
         {view === "account" && (
           <AccountPortal
-            auth={auth}
-            myOrders={myOrders}
-            loadMyOrders={loadMyOrders}
-            handleLogin={handleLogin}
-            handleRegister={handleRegister}
-            handleLogout={handleLogout}
-            adminTab={adminTab}
-            setAdminTab={setAdminTab}
-            dashboard={dashboard}
-            loadDashboard={loadDashboard}
-            loadAdminOrders={loadAdminOrders}
-            loadAdminUsers={loadAdminUsers}
-            loadAdminPayments={loadAdminPayments}
-            loadUserDetail={loadUserDetail}
-            orders={orders}
-            payments={payments}
-            users={users}
-            selectedUser={selectedUser}
-            setSelectedUser={setSelectedUser}
-            adminMessage={adminMessage}
-            setAdminMessage={setAdminMessage}
-            updateStatus={updateStatus}
-            sendNotification={sendNotification}
-            onTrackOrder={(order) => {
-              setView("shop");
-              setOrderNumber(order.order_number);
-              setTrackPhone(order.customer_phone || auth?.user?.phone || "");
-              setTrackedOrder(order);
-              setTimeout(() => document.getElementById("track")?.scrollIntoView({ behavior: "smooth" }), 100);
-            }}
+            auth={auth} myOrders={myOrders} loadMyOrders={loadMyOrders}
+            handleLogin={handleLogin} handleRegister={handleRegister} handleLogout={handleLogout}
+            adminTab={adminTab} setAdminTab={setAdminTab} dashboard={dashboard} loadDashboard={loadDashboard}
+            loadAdminOrders={loadAdminOrders} loadAdminUsers={loadAdminUsers} loadAdminPayments={loadAdminPayments}
+            loadUserDetail={loadUserDetail} orders={orders} payments={payments} users={users}
+            selectedUser={selectedUser} setSelectedUser={setSelectedUser}
+            adminMessage={adminMessage} setAdminMessage={setAdminMessage}
+            updateStatus={updateStatus} sendNotification={sendNotification}
+            onTrackOrder={handleTrackOrder}
           />
         )}
       </main>
@@ -837,20 +683,13 @@ async function placeOrder(event) {
         <div className="footer-top">
           <div className="footer-brand">
             <img src="/logo.png" alt="ANNAI HEALTH MASALA" width={52} height={52} className="brand-logo" />
-            <div>
-              <strong>ANNAI HEALTH MASALA</strong>
-              <span>Your Health is Our Priority.</span>
-            </div>
+            <div><strong>ANNAI HEALTH MASALA</strong><span>Your Health is Our Priority.</span></div>
           </div>
           <div className="footer-contact">
             <p className="footer-section-title">Contact Us</p>
             <p>
               <MapPin size={15} />
-              <a
-                href="https://www.google.com/maps/search/Madakkudi,+Pallividai,+Samayapuram,+Trichy"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+              <a href="https://www.google.com/maps/search/Madakkudi,+Pallividai,+Samayapuram,+Trichy" target="_blank" rel="noopener noreferrer">
                 Annai Health Foods, Madakkudi, Pallividai, Samayapuram, Trichy-621 112
               </a>
             </p>
@@ -859,11 +698,7 @@ async function placeOrder(event) {
           <div className="footer-fssai">
             <p className="footer-section-title">Food Safety</p>
             <div className="fssai-block">
-              <img
-                src="/fssaiimage.png"
-                alt="FSSAI"
-                className="fssai-logo"
-              />
+              <img src="/fssaiimage.png" alt="FSSAI" className="fssai-logo" />
               <span>FSSAI Lic. No.:<br /><strong>22420308000104</strong></span>
             </div>
           </div>
@@ -886,12 +721,9 @@ function PaymentMethodPicker({ paymentMethod, setPaymentMethod, paymentOnline })
           const active = paymentMethod === method.id;
           const unavailable = method.online && !paymentOnline;
           return (
-            <button
-              key={method.id}
-              type="button"
+            <button key={method.id} type="button"
               className={`payment-card ${active ? "payment-card--active" : ""} ${unavailable ? "payment-card--disabled" : ""}`}
-              onClick={() => setPaymentMethod(method.id)}
-              disabled={unavailable}
+              onClick={() => setPaymentMethod(method.id)} disabled={unavailable}
             >
               <span className="payment-card__icon"><Icon size={26} /></span>
               <span className="payment-card__text">
@@ -921,22 +753,10 @@ function OrderSummary({ cart, cartTotal, paymentMethod }) {
           </div>
         ))}
       </div>
-      <div className="order-summary__row">
-        <span>Subtotal</span>
-        <strong>{formatMoney(itemTotal)}</strong>
-      </div>
-      <div className="order-summary__row">
-        <span>Delivery</span>
-        <strong>Free</strong>
-      </div>
-      <div className="order-summary__total">
-        <span>Total</span>
-        <strong>{formatMoney(cartTotal)}</strong>
-      </div>
-      <div className="order-summary__payment">
-        <CreditCard size={16} />
-        <span>{paymentMethodLabels[paymentMethod] || paymentMethod}</span>
-      </div>
+      <div className="order-summary__row"><span>Subtotal</span><strong>{formatMoney(itemTotal)}</strong></div>
+      <div className="order-summary__row"><span>Delivery</span><strong>Free</strong></div>
+      <div className="order-summary__total"><span>Total</span><strong>{formatMoney(cartTotal)}</strong></div>
+      <div className="order-summary__payment"><CreditCard size={16} /><span>{paymentMethodLabels[paymentMethod] || paymentMethod}</span></div>
     </aside>
   );
 }
@@ -944,23 +764,15 @@ function OrderSummary({ cart, cartTotal, paymentMethod }) {
 function CartPage({ cart, cartTotal, removeItem, updateQuantity, onBack, onCheckout }) {
   return (
     <section className="section checkout-flow" id="cart">
-      <button type="button" className="back-link" onClick={onBack}>
-        <ChevronLeft size={18} /> Continue shopping
-      </button>
-      <div className="section-heading">
-        <p>Your cart</p>
-        <h2><ShoppingCart size={24} /> {cart.length} item{cart.length !== 1 ? "s" : ""}</h2>
-      </div>
+      <button type="button" className="back-link" onClick={onBack}><ChevronLeft size={18} /> Continue shopping</button>
+      <div className="section-heading"><p>Your cart</p><h2><ShoppingCart size={24} /> {cart.length} item{cart.length !== 1 ? "s" : ""}</h2></div>
       {cart.length ? (
         <>
           <div className="cart-panel cart-panel--full">
             <div className="cart-list">
               {cart.map((item) => (
                 <div className="cart-item-card" key={item.id}>
-                  <div className="cart-item-card__info">
-                    <strong>{item.name}</strong>
-                    <span>{formatMoney(item.price)}/kg</span>
-                  </div>
+                  <div className="cart-item-card__info"><strong>{item.name}</strong><span>{formatMoney(item.price)}/kg</span></div>
                   <div className="cart-item-card__actions">
                     <input type="number" min="0.25" step="0.25" value={item.quantity} onChange={(e) => updateQuantity(item.id, e.target.value)} aria-label="Quantity kg" />
                     <strong>{formatMoney(item.price * item.quantity)}</strong>
@@ -969,14 +781,9 @@ function CartPage({ cart, cartTotal, removeItem, updateQuantity, onBack, onCheck
                 </div>
               ))}
             </div>
-            <div className="cart-total-bar">
-              <span>Cart total</span>
-              <strong>{formatMoney(cartTotal)}</strong>
-            </div>
+            <div className="cart-total-bar"><span>Cart total</span><strong>{formatMoney(cartTotal)}</strong></div>
           </div>
-          <button type="button" className="submit-button checkout-cta" onClick={onCheckout}>
-            Proceed to Payment <ArrowRight size={18} />
-          </button>
+          <button type="button" className="submit-button checkout-cta" onClick={onCheckout}>Proceed to Payment <ArrowRight size={18} /></button>
         </>
       ) : (
         <p className="empty-state">Cart is empty. Add items from the menu.</p>
@@ -987,40 +794,26 @@ function CartPage({ cart, cartTotal, removeItem, updateQuantity, onBack, onCheck
 
 function CheckoutPage({ cart, cartTotal, customer, setCustomer, placeOrder, paymentMethod, setPaymentMethod, paymentOnline, auth, onBack, onGoLogin }) {
   const payOnline = paymentOnline && isOnlinePayment(paymentMethod);
-
   if (!auth) {
     return (
       <section className="section checkout-flow" id="checkout">
-        <button type="button" className="back-link" onClick={onBack}>
-          <ChevronLeft size={18} /> Back to cart
-        </button>
+        <button type="button" className="back-link" onClick={onBack}><ChevronLeft size={18} /> Back to cart</button>
         <div className="login-wall">
           <LogIn size={40} />
           <h2>Login required</h2>
           <p>You must be logged in to place an order.</p>
-          <button type="button" className="submit-button" onClick={onGoLogin}>
-            <LogIn size={18} /> Login / Register
-          </button>
+          <button type="button" className="submit-button" onClick={onGoLogin}><LogIn size={18} /> Login / Register</button>
         </div>
       </section>
     );
   }
   return (
     <section className="section checkout-flow" id="checkout">
-      <button type="button" className="back-link" onClick={onBack}>
-        <ChevronLeft size={18} /> Back to cart
-      </button>
-      <div className="section-heading">
-        <p>Checkout</p>
-        <h2>{auth ? `Hi, ${auth.user.name || auth.user.username}` : "Guest checkout"}</h2>
-      </div>
+      <button type="button" className="back-link" onClick={onBack}><ChevronLeft size={18} /> Back to cart</button>
+      <div className="section-heading"><p>Checkout</p><h2>Hi, {auth.user.name || auth.user.username}</h2></div>
       <div className="checkout-layout">
         <div className="checkout-main">
-          <PaymentMethodPicker
-            paymentMethod={paymentMethod}
-            setPaymentMethod={setPaymentMethod}
-            paymentOnline={paymentOnline}
-          />
+          <PaymentMethodPicker paymentMethod={paymentMethod} setPaymentMethod={setPaymentMethod} paymentOnline={paymentOnline} />
           <form className="order-form order-form--checkout" onSubmit={placeOrder}>
             <h3><MapPin size={20} /> Delivery details</h3>
             <label className="field-label"><User size={16} /> Full name</label>
@@ -1072,12 +865,8 @@ function OrderCard({ order, onTrack, showAddress = false }) {
         </div>
         <div className="order-card__amount">
           <strong>{formatMoney(order.order_total)}</strong>
-          <span className="payment-badge">
-            {paymentMethodLabels[order.payment_method] || order.payment_method}
-          </span>
-          <span className={`badge badge--${order.payment_status}`}>
-            {paymentStatusLabels[order.payment_status] || order.payment_status}
-          </span>
+          <span className="payment-badge">{paymentMethodLabels[order.payment_method] || order.payment_method}</span>
+          <span className={`badge badge--${order.payment_status}`}>{paymentStatusLabels[order.payment_status] || order.payment_status}</span>
         </div>
       </div>
       <div className="order-card__items">
@@ -1098,13 +887,172 @@ function OrderCard({ order, onTrack, showAddress = false }) {
   );
 }
 
-function TrackingPanel({ orderNumber, setOrderNumber, trackPhone, setTrackPhone, trackPin, setTrackPin, trackedOrder, lastTrackingPin, trackOrder }) {
+// ── Admin Orders Tab — dropdown to select customer/order, active cards, completed link ──
+function AdminOrdersTab({ orders, auth, adminMessage, setAdminMessage, updateStatus, sendNotification, onTrackOrder, onViewCustomer }) {
+  const DONE = new Set(["delivered", "cancelled"]);
+  const activeOrders = orders.filter((o) => !DONE.has(o.status));
+  const doneOrders   = orders.filter((o) =>  DONE.has(o.status));
+
+  const [selectedOrderNum, setSelectedOrderNum] = useState(activeOrders[0]?.order_number || "");
+  const selectedOrder = orders.find((o) => o.order_number === selectedOrderNum) || null;
+
+  // keep selection valid when orders reload
+  useEffect(() => {
+    if (selectedOrderNum && !orders.find((o) => o.order_number === selectedOrderNum)) {
+      setSelectedOrderNum(activeOrders[0]?.order_number || "");
+    }
+  }, [orders]);
+
+  function downloadPDF(order) {
+    if (!auth?.token) { alert("Please log in again."); return; }
+    downloadAdminFile(
+      `${API_BASE}/admin/export/receipt/${order.order_number}/`,
+      `receipt-${order.order_number}.pdf`,
+      { Authorization: `Bearer ${auth.token}` },
+      "pdf",
+    ).catch((e) => alert(e.message || "PDF export failed"));
+  }
+
+  return (
+    <div className="admin-orders-tab">
+      {/* ── Customer / Order selector dropdown ── */}
+      <div className="order-selector">
+        <label className="field-label"><Users size={15} /> Select customer order</label>
+        <select
+          className="status-dropdown order-selector__select"
+          value={selectedOrderNum}
+          onChange={(e) => setSelectedOrderNum(e.target.value)}
+        >
+          <option value="">— choose an order —</option>
+          {activeOrders.length > 0 && (
+            <optgroup label="Active Orders">
+              {activeOrders.map((o) => (
+                <option key={o.order_number} value={o.order_number}>
+                  {o.customer_name} · #{o.order_number} · {statusLabels[o.status]}
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {doneOrders.length > 0 && (
+            <optgroup label="Completed Orders">
+              {doneOrders.map((o) => (
+                <option key={o.order_number} value={o.order_number}>
+                  {o.customer_name} · #{o.order_number} · {statusLabels[o.status]}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+      </div>
+
+      {/* ── Selected order detail ── */}
+      {selectedOrder && (
+        <article className="admin-order admin-order--selected">
+          <div className="admin-order__header">
+            <div>
+              <p className="admin-order__id">#{selectedOrder.order_number}</p>
+              <p className="admin-order__name">{selectedOrder.customer_name}</p>
+              <p className="admin-order__contact">{selectedOrder.customer_phone}</p>
+            </div>
+            <div className="admin-order__badges">
+              <span className={`badge-status badge-status--${selectedOrder.status}`}>{statusLabels[selectedOrder.status]}</span>
+              <span className={`badge-payment badge-payment--${selectedOrder.payment_status}`}>
+                {paymentMethodLabels[selectedOrder.payment_method] || selectedOrder.payment_method} — {paymentStatusLabels[selectedOrder.payment_status]}
+              </span>
+              <span className="admin-order__total">₹{Number(selectedOrder.order_total).toFixed(2)}</span>
+            </div>
+          </div>
+
+          <div className="admin-order__body">
+            {selectedOrder.customer_address && <p className="admin-order__address">{selectedOrder.customer_address}</p>}
+            <div className="admin-order__items">
+              {(selectedOrder.items || []).map((item, i) => (
+                <span className="admin-order__item-chip" key={i}>
+                  {item.product_name} × {item.quantity_kg}kg (₹{Number(item.line_total).toFixed(2)})
+                </span>
+              ))}
+            </div>
+            {(selectedOrder.payments || []).map((p) => (
+              <p key={p.id} className="admin-order__payment-line">
+                <CreditCard size={13} /> Payment #{p.id}: {p.method} — {paymentStatusLabels[p.status]}
+                {p.razorpay_payment_id && ` · ${p.razorpay_payment_id}`}
+              </p>
+            ))}
+
+            {/* Status dropdown — only for active orders */}
+            {!DONE.has(selectedOrder.status) && (
+              <div className="admin-order__status-btns">
+                <select
+                  className="status-dropdown"
+                  value={selectedOrder.status}
+                  onChange={(e) => updateStatus(selectedOrder, e.target.value)}
+                >
+                  {Object.entries(statusLabels).map(([s, label]) => (
+                    <option key={s} value={s}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Message box — only for active orders */}
+            {!DONE.has(selectedOrder.status) && (
+              <div className="admin-order__msg">
+                <textarea
+                  placeholder="Message to customer (order & payment update)"
+                  value={adminMessage[selectedOrder.order_number] || ""}
+                  onChange={(e) => setAdminMessage({ ...adminMessage, [selectedOrder.order_number]: e.target.value })}
+                />
+              </div>
+            )}
+
+            {/* Timeline */}
+            <OrderTimeline order={selectedOrder} />
+          </div>
+
+          <div className="admin-order__actions">
+            {!DONE.has(selectedOrder.status) && (
+              <>
+                <button type="button" className="action-btn" onClick={() => sendNotification(selectedOrder)}>
+                  <Send size={14} /> Send update
+                </button>
+                <button type="button" className="action-btn action-btn--track" onClick={() => onTrackOrder(selectedOrder)}>
+                  <Search size={14} /> Track Live
+                </button>
+                {selectedOrder.payment_status === "pending" && (
+                  <button type="button" className="action-btn action-btn--cod" onClick={() => sendNotification(selectedOrder, "paid")}>
+                    <IndianRupee size={14} /> Cash Received
+                  </button>
+                )}
+              </>
+            )}
+            {/* Receipt PDF always visible */}
+            <button type="button" className="action-btn action-btn--pdf" onClick={() => downloadPDF(selectedOrder)}>
+              📄 Receipt PDF
+            </button>
+            {/* Completed orders → go to customer detail */}
+            {DONE.has(selectedOrder.status) && (
+              <button type="button" className="action-btn action-btn--track" onClick={() => onViewCustomer(selectedOrder)}>
+                <Users size={14} /> Customer Detail
+              </button>
+            )}
+          </div>
+        </article>
+      )}
+
+      {/* ── Active orders count summary ── */}
+      <div className="orders-summary-bar">
+        <span><strong>{activeOrders.length}</strong> active</span>
+        <span><strong>{doneOrders.length}</strong> completed — see Customer Detail tab</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Tracking Panel — shown in shop after order placed ──
+function TrackingPanel({ orderNumber, setOrderNumber, trackPhone, setTrackPhone, trackPin, setTrackPin, trackedOrder, lastTrackingPin, trackOrder, auth }) {
   return (
     <section className="section track-panel" id="track">
-      <div className="section-heading">
-        <p>Live tracking</p>
-        <h2>Track your order</h2>
-      </div>
+      <div className="section-heading"><p>Live tracking</p><h2>Track your order</h2></div>
       <div className="track-search">
         <input placeholder="Order number" value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} />
         <input placeholder="Phone number" value={trackPhone} onChange={(e) => setTrackPhone(e.target.value)} />
@@ -1114,7 +1062,31 @@ function TrackingPanel({ orderNumber, setOrderNumber, trackPhone, setTrackPhone,
       {lastTrackingPin && (
         <p className="tracking-pin-notice">Your tracking PIN: <strong>{lastTrackingPin}</strong> — save this!</p>
       )}
-      {trackedOrder && <OrderCard order={trackedOrder} showAddress />}
+      {trackedOrder && (
+        <>
+          <OrderCard order={trackedOrder} showAddress />
+          {auth?.user?.is_staff && trackedOrder.order_number && (
+            <button
+              type="button"
+              className="action-btn action-btn--pdf tracking-pdf-btn"
+              onClick={async () => {
+                try {
+                  await downloadAdminFile(
+                    `${API_BASE}/admin/export/receipt/${trackedOrder.order_number}/`,
+                    `receipt-${trackedOrder.order_number}.pdf`,
+                    { Authorization: `Bearer ${auth.token}` },
+                    "pdf",
+                  );
+                } catch (error) {
+                  alert(error.message || "PDF export failed");
+                }
+              }}
+            >
+              📄 Download Receipt PDF
+            </button>
+          )}
+        </>
+      )}
     </section>
   );
 }
@@ -1122,30 +1094,19 @@ function TrackingPanel({ orderNumber, setOrderNumber, trackPhone, setTrackPhone,
 function LoginPage({ onSubmit, onSwitch }) {
   const [form, setForm] = useState({ username: "", password: "" });
   const [loading, setLoading] = useState(false);
-
   async function submit(event) {
-    event.preventDefault();
-    setLoading(true);
-    try {
-      await onSubmit(event, form);
-    } finally {
-      setLoading(false);
-    }
+    event.preventDefault(); setLoading(true);
+    try { await onSubmit(event, form); } finally { setLoading(false); }
   }
-
   return (
     <section className="section auth-section">
       <div className="section-heading"><p>Welcome back</p><h2>Login to your account</h2></div>
       <form className="auth-form" onSubmit={submit}>
         <input required placeholder="Username or email" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} autoComplete="username" />
         <input required type="password" placeholder="Password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} autoComplete="current-password" />
-        <button className="submit-button" type="submit" disabled={loading}>
-          <LogIn size={18} /> {loading ? "Logging in..." : "Login"}
-        </button>
+        <button className="submit-button" type="submit" disabled={loading}><LogIn size={18} /> {loading ? "Logging in..." : "Login"}</button>
       </form>
-      {onSwitch && (
-        <p className="auth-switch">New here? <button type="button" className="link-button" onClick={onSwitch}>Create account</button></p>
-      )}
+      {onSwitch && <p className="auth-switch">New here? <button type="button" className="link-button" onClick={onSwitch}>Create account</button></p>}
     </section>
   );
 }
@@ -1153,17 +1114,10 @@ function LoginPage({ onSubmit, onSwitch }) {
 function RegisterPage({ onSubmit, onSwitch }) {
   const [form, setForm] = useState({ username: "", email: "", password: "", name: "", phone: "", address: "" });
   const [loading, setLoading] = useState(false);
-
   async function submit(event) {
-    event.preventDefault();
-    setLoading(true);
-    try {
-      await onSubmit(event, form);
-    } finally {
-      setLoading(false);
-    }
+    event.preventDefault(); setLoading(true);
+    try { await onSubmit(event, form); } finally { setLoading(false); }
   }
-
   return (
     <section className="section auth-section">
       <div className="section-heading"><p>Join us</p><h2>Create your account</h2></div>
@@ -1174,9 +1128,7 @@ function RegisterPage({ onSubmit, onSwitch }) {
         <input placeholder="Full name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <input placeholder="Phone" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         <textarea placeholder="Delivery address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
-        <button className="submit-button" type="submit" disabled={loading}>
-          <UserPlus size={18} /> {loading ? "Creating..." : "Register"}
-        </button>
+        <button className="submit-button" type="submit" disabled={loading}><UserPlus size={18} /> {loading ? "Creating..." : "Register"}</button>
       </form>
       <p className="auth-switch">Have an account? <button type="button" className="link-button" onClick={onSwitch}>Login</button></p>
     </section>
@@ -1204,15 +1156,12 @@ function AdminDashboard({ dashboard, orders, users, payments, onOpenOrders }) {
         <article className="stat-card"><IndianRupee size={22} /><strong>{formatMoney(stats.total_revenue)}</strong><span>Revenue (Paid)</span></article>
         <article className="stat-card stat-card--warn"><CreditCard size={22} /><strong>{stats.pending_payments}</strong><span>Pending Payments</span></article>
       </div>
-
       <div className="analytics-grid">
         <section className="analytics-card">
           <h3><TrendingUp size={20} /> Product sales analytics</h3>
           <div className="users-table-wrap">
             <table className="users-table">
-              <thead>
-                <tr><th>Product</th><th>Orders</th><th>Qty sold (kg)</th><th>Revenue</th></tr>
-              </thead>
+              <thead><tr><th>Product</th><th>Orders</th><th>Qty sold (kg)</th><th>Revenue</th></tr></thead>
               <tbody>
                 {productSales.length ? productSales.map((row) => (
                   <tr key={row.product_name}>
@@ -1221,27 +1170,20 @@ function AdminDashboard({ dashboard, orders, users, payments, onOpenOrders }) {
                     <td>{row.total_kg.toFixed(2)}</td>
                     <td>{formatMoney(row.revenue)}</td>
                   </tr>
-                )) : (
-                  <tr><td colSpan={4} className="empty-state">No sales data yet.</td></tr>
-                )}
+                )) : <tr><td colSpan={4} className="empty-state">No sales data yet.</td></tr>}
               </tbody>
             </table>
           </div>
         </section>
-
         <section className="analytics-card">
           <h3><Package size={20} /> Orders by status</h3>
           <div className="status-pills">
             {Object.entries(ordersByStatus).map(([status, count]) => (
-              <div className="status-pill" key={status}>
-                <strong>{count}</strong>
-                <span>{statusLabels[status] || status}</span>
-              </div>
+              <div className="status-pill" key={status}><strong>{count}</strong><span>{statusLabels[status] || status}</span></div>
             ))}
           </div>
         </section>
       </div>
-
       <section className="analytics-card">
         <div className="analytics-card__head">
           <h3><ClipboardList size={20} /> Live order tracking</h3>
@@ -1249,9 +1191,7 @@ function AdminDashboard({ dashboard, orders, users, payments, onOpenOrders }) {
         </div>
         <div className="users-table-wrap">
           <table className="users-table">
-            <thead>
-              <tr><th>Order</th><th>Customer</th><th>Status</th><th>Payment</th><th>Total</th><th>Time</th></tr>
-            </thead>
+            <thead><tr><th>Order</th><th>Customer</th><th>Status</th><th>Payment</th><th>Total</th><th>Time</th></tr></thead>
             <tbody>
               {recentOrders.map((order) => (
                 <tr key={order.order_number}>
@@ -1271,46 +1211,38 @@ function AdminDashboard({ dashboard, orders, users, payments, onOpenOrders }) {
   );
 }
 
+// ── Admin Panel ──
 function AdminPanel({
   auth, adminTab, setAdminTab, dashboard, loadDashboard,
   loadAdminOrders, loadAdminUsers, loadAdminPayments, loadUserDetail,
   orders, payments, users, selectedUser, setSelectedUser,
-  adminMessage, setAdminMessage, updateStatus, sendNotification, onLogout,
+  adminMessage, setAdminMessage, updateStatus, sendNotification, onLogout, onTrackOrder,
 }) {
   const adminLoaded = useRef(false);
 
   useEffect(() => {
     if (!auth?.user?.is_staff || adminLoaded.current) return;
     adminLoaded.current = true;
-    loadDashboard();
-    loadAdminOrders();
-    loadAdminUsers();
-    loadAdminPayments();
+    loadDashboard(); loadAdminOrders(); loadAdminUsers(); loadAdminPayments();
   }, [auth?.user?.is_staff, loadDashboard, loadAdminOrders, loadAdminUsers, loadAdminPayments]);
 
-  function refreshAll() {
-    loadDashboard();
-    loadAdminOrders();
-    loadAdminUsers();
-    loadAdminPayments();
-  }
+  function refreshAll() { loadDashboard(); loadAdminOrders(); loadAdminUsers(); loadAdminPayments(); }
 
   return (
     <section className="section admin-section">
       <div className="section-heading admin-section__head">
-        <div>
-          <p>Admin Dashboard</p>
-          <h2>Welcome, {auth.user.name || auth.user.username}</h2>
-        </div>
+        <div><p>Admin Dashboard</p><h2>Welcome, {auth.user.name || auth.user.username}</h2></div>
         <div className="admin-section__actions">
-          <button type="button" className="submit-button" onClick={refreshAll}>
-            <ClipboardList size={18} /> Refresh
-          </button>
-          {onLogout && (
-            <button type="button" className="submit-button logout-button" onClick={onLogout}>
-              <LogOut size={18} /> Logout
-            </button>
-          )}
+          <button type="button" className="submit-button" onClick={refreshAll}><ClipboardList size={18} /> Refresh</button>
+          <button type="button" className="submit-button export-btn"
+            onClick={async () => {
+              if (!auth?.token) { alert("Please log in again to export data."); return; }
+              try {
+                await downloadAdminFile(`${API_BASE}/admin/export/excel/`, "annai-health-report.xlsx", { Authorization: `Bearer ${auth.token}` }, "spreadsheet");
+              } catch (error) { alert(error.message || "Export failed"); }
+            }}
+          >⬇ Export Excel</button>
+          {onLogout && <button type="button" className="submit-button logout-button" onClick={onLogout}><LogOut size={18} /> Logout</button>}
         </div>
       </div>
 
@@ -1327,96 +1259,35 @@ function AdminPanel({
       </div>
 
       {adminTab === "overview" && (
-        <AdminDashboard
-          dashboard={dashboard}
-          orders={orders}
-          users={users}
-          payments={payments}
-          onOpenOrders={() => setAdminTab("orders")}
-        />
+        <AdminDashboard dashboard={dashboard} orders={orders} users={users} payments={payments} onOpenOrders={() => setAdminTab("orders")} />
       )}
 
       {adminTab === "orders" && (
-        <div className="orders-grid">
-          {orders.map((order) => {
-            const statusClass = `badge-status--${order.status}`;
-            const payClass = `badge-payment--${order.payment_status}`;
-            return (
-              <article className="admin-order" key={order.order_number}>
-                <div className="admin-order__header">
-                  <div>
-                    <p className="admin-order__id">#{order.order_number}</p>
-                    <p className="admin-order__name">{order.customer_name}</p>
-                    <p className="admin-order__contact">{order.customer_phone}</p>
-                  </div>
-                  <div className="admin-order__badges">
-                    <span className={`badge-status ${statusClass}`}>{statusLabels[order.status]}</span>
-                    <span className={`badge-payment ${payClass}`}>
-                      {paymentMethodLabels[order.payment_method] || order.payment_method} — {paymentStatusLabels[order.payment_status]}
-                    </span>
-                    <span className="admin-order__total">₹{Number(order.order_total).toFixed(2)}</span>
-                  </div>
-                </div>
-
-                <div className="admin-order__body">
-                  {order.customer_address && (
-                    <p className="admin-order__address">{order.customer_address}</p>
-                  )}
-
-                  <div className="admin-order__items">
-                    {(order.items || []).map((item, i) => (
-                      <span className="admin-order__item-chip" key={i}>
-                        {item.product_name} × {item.quantity_kg}kg (₹{Number(item.line_total).toFixed(2)})
-                      </span>
-                    ))}
-                  </div>
-
-                  {(order.payments || []).map((p) => (
-                    <p key={p.id} className="admin-order__payment-line">
-                      <CreditCard size={13} /> Payment #{p.id}: {p.method} — {paymentStatusLabels[p.status]}
-                      {p.razorpay_payment_id && ` · ${p.razorpay_payment_id}`}
-                    </p>
-                  ))}
-
-                  <div className="admin-order__status-btns">
-                    {Object.keys(statusLabels).map((status) => (
-                      <button key={status} type="button" className="status-btn" onClick={() => updateStatus(order, status)}>
-                        {statusLabels[status]}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="admin-order__msg">
-                    <textarea
-                      placeholder="Message to customer (order & payment update)"
-                      value={adminMessage[order.order_number] || ""}
-                      onChange={(e) => setAdminMessage({ ...adminMessage, [order.order_number]: e.target.value })}
-                    />
-                  </div>
-                </div>
-
-                <div className="admin-order__actions">
-                  <button type="button" className="action-btn" onClick={() => sendNotification(order)}>
-                    <Send size={14} /> Send update
-                  </button>
-                  {order.payment_status === "pending" && (
-                    <button type="button" className="action-btn action-btn--cod" onClick={() => sendNotification(order, "paid")}>
-                      <IndianRupee size={14} /> Cash Received
-                    </button>
-                  )}
-                </div>
-              </article>
+        <AdminOrdersTab
+          orders={orders}
+          auth={auth}
+          adminMessage={adminMessage}
+          setAdminMessage={setAdminMessage}
+          updateStatus={updateStatus}
+          sendNotification={sendNotification}
+          onTrackOrder={onTrackOrder}
+          onViewCustomer={(order) => {
+            // find matching user and open user-detail
+            const match = users.find(
+              (u) => u.phone === order.customer_phone ||
+                     u.name === order.customer_name ||
+                     u.username === order.customer_name
             );
-          })}
-        </div>
+            if (match) loadUserDetail(match.id);
+            else setAdminTab("users");
+          }}
+        />
       )}
 
       {adminTab === "users" && (
         <div className="users-table-wrap">
           <table className="users-table">
-            <thead>
-              <tr><th>User</th><th>Contact</th><th>Orders</th><th>Joined</th><th></th></tr>
-            </thead>
+            <thead><tr><th>User</th><th>Contact</th><th>Orders</th><th>Joined</th><th></th></tr></thead>
             <tbody>
               {users.map((user) => (
                 <tr key={user.id}>
@@ -1424,9 +1295,7 @@ function AdminPanel({
                   <td>{user.phone || "—"}<br /><small>{user.email || "—"}</small></td>
                   <td>{user.order_count}</td>
                   <td>{new Date(user.date_joined).toLocaleDateString()}</td>
-                  <td>
-                    <button type="button" className="link-button" onClick={() => loadUserDetail(user.id)}>View details</button>
-                  </td>
+                  <td><button type="button" className="link-button" onClick={() => loadUserDetail(user.id)}>View details</button></td>
                 </tr>
               ))}
             </tbody>
@@ -1437,9 +1306,7 @@ function AdminPanel({
       {adminTab === "payments" && (
         <div className="users-table-wrap">
           <table className="users-table">
-            <thead>
-              <tr><th>Order</th><th>Customer</th><th>Method</th><th>Status</th><th>Amount</th><th>Date</th></tr>
-            </thead>
+            <thead><tr><th>Order</th><th>Customer</th><th>Method</th><th>Status</th><th>Amount</th><th>Date</th></tr></thead>
             <tbody>
               {payments.map((p) => (
                 <tr key={p.id}>
@@ -1468,7 +1335,27 @@ function AdminPanel({
           <h4>Order history</h4>
           <div className="orders-list">
             {(selectedUser.orders || []).map((order) => (
-              <OrderCard key={order.order_number} order={order} showAddress />
+              <div key={order.order_number}>
+                <OrderCard order={order} showAddress />
+                {["delivered", "cancelled"].includes(order.status) && auth?.token && (
+                  <button
+                    type="button"
+                    className="action-btn action-btn--pdf tracking-pdf-btn"
+                    onClick={async () => {
+                      try {
+                        await downloadAdminFile(
+                          `${API_BASE}/admin/export/receipt/${order.order_number}/`,
+                          `receipt-${order.order_number}.pdf`,
+                          { Authorization: `Bearer ${auth.token}` },
+                          "pdf",
+                        );
+                      } catch (error) { alert(error.message || "PDF export failed"); }
+                    }}
+                  >
+                    📄 Receipt PDF
+                  </button>
+                )}
+              </div>
             ))}
           </div>
           <h4>Payment history</h4>
@@ -1478,8 +1365,7 @@ function AdminPanel({
               <tbody>
                 {(selectedUser.payments || []).map((p) => (
                   <tr key={p.id}>
-                    <td>#{p.order_number}</td>
-                    <td>{p.method}</td>
+                    <td>#{p.order_number}</td><td>{p.method}</td>
                     <td><span className={`badge badge--${p.status}`}>{paymentStatusLabels[p.status]}</span></td>
                     <td>{formatMoney(p.amount)}</td>
                   </tr>
@@ -1504,11 +1390,9 @@ function AccountPortal({
 
   useEffect(() => {
     if (auth) {
-      if (!auth.user.is_staff) {
-        setTab((current) => (current === "login" || current === "register" ? "orders" : current));
-      }
+      if (!auth.user.is_staff) setTab((c) => (c === "login" || c === "register" ? "orders" : c));
     } else {
-      setTab((current) => (["orders", "profile"].includes(current) ? "login" : current));
+      setTab((c) => (["orders", "profile"].includes(c) ? "login" : c));
       ordersLoaded.current = false;
     }
   }, [auth?.token, auth?.user?.is_staff]);
@@ -1524,25 +1408,15 @@ function AccountPortal({
     return (
       <div className="portal-wrapper portal-wrapper--admin">
         <AdminPanel
-          auth={auth}
-          adminTab={adminTab}
-          setAdminTab={setAdminTab}
-          dashboard={dashboard}
-          loadDashboard={loadDashboard}
-          loadAdminOrders={loadAdminOrders}
-          loadAdminUsers={loadAdminUsers}
-          loadAdminPayments={loadAdminPayments}
-          loadUserDetail={loadUserDetail}
-          orders={orders}
-          payments={payments}
-          users={users}
-          selectedUser={selectedUser}
-          setSelectedUser={setSelectedUser}
-          adminMessage={adminMessage}
-          setAdminMessage={setAdminMessage}
-          updateStatus={updateStatus}
-          sendNotification={sendNotification}
-          onLogout={handleLogout}
+          auth={auth} adminTab={adminTab} setAdminTab={setAdminTab}
+          dashboard={dashboard} loadDashboard={loadDashboard}
+          loadAdminOrders={loadAdminOrders} loadAdminUsers={loadAdminUsers}
+          loadAdminPayments={loadAdminPayments} loadUserDetail={loadUserDetail}
+          orders={orders} payments={payments} users={users}
+          selectedUser={selectedUser} setSelectedUser={setSelectedUser}
+          adminMessage={adminMessage} setAdminMessage={setAdminMessage}
+          updateStatus={updateStatus} sendNotification={sendNotification}
+          onLogout={handleLogout} onTrackOrder={onTrackOrder}
         />
       </div>
     );
@@ -1563,33 +1437,24 @@ function AccountPortal({
           </>
         )}
       </div>
-
       <div className="portal-content">
         {tab === "login" && !auth && (
           <>
             <LoginPage onSubmit={handleLogin} onSwitch={() => setTab("register")} />
-            <p className="login-hint">
-              <UserCog size={16} /> Store admin? Login with your staff account — the dashboard opens automatically.
-            </p>
+            <p className="login-hint"><UserCog size={16} /> Store admin? Login with your staff account — the dashboard opens automatically.</p>
           </>
         )}
         {tab === "register" && !auth && <RegisterPage onSubmit={handleRegister} onSwitch={() => setTab("login")} />}
-
         {tab === "orders" && auth && (
           <section className="section">
             <div className="section-heading"><p>Your orders</p><h2>Order history & live tracking</h2></div>
             {myOrders.length ? (
               <div className="orders-list">
-                {myOrders.map((order) => (
-                  <OrderCard key={order.order_number} order={order} onTrack={onTrackOrder} showAddress />
-                ))}
+                {myOrders.map((order) => <OrderCard key={order.order_number} order={order} onTrack={onTrackOrder} showAddress />)}
               </div>
-            ) : (
-              <p className="empty-state">No orders yet. Browse the shop and place your first order!</p>
-            )}
+            ) : <p className="empty-state">No orders yet. Browse the shop and place your first order!</p>}
           </section>
         )}
-
         {tab === "profile" && auth && (
           <section className="section profile-section">
             <div className="section-heading"><p>Profile</p><h2>{auth.user.name || auth.user.username}</h2></div>

@@ -43,7 +43,6 @@ Built with React 18 + Vite (frontend) and Django 5 (backend). No Django REST Fra
 │   ├── logo.png
 │   ├── fssaiimage.png
 │   └── (product images)
-├── assts/                    # Source images (copy to public/ before use)
 ├── index.html
 ├── package.json
 ├── vite.config.js
@@ -153,13 +152,16 @@ Login at the Account tab — the admin dashboard opens automatically for staff u
 
 1. Login with staff account — admin dashboard opens automatically.
 2. **Overview tab:** stats, revenue, product sales analytics, recent orders.
-3. **Track Orders tab:** view all orders as cards.
-   - Click status buttons (Confirmed / Fresh Grinding / Packed / Ready / Delivered) — customer gets email notification.
-   - Type a message and click **Send update** — message saved in timeline and emailed to customer.
-   - Click **Cash Received** on pending orders — payment marked as paid, full receipt emailed to customer.
-4. **Customers tab:** view registered users, order counts, contact details.
+3. **Track Orders tab:**
+   - Use the **customer name dropdown** at the top to select any order (grouped into Active and Completed).
+   - Selected order shows full detail: items, payments, timeline.
+   - For **active orders**: change status via dropdown, send a message, mark cash received, track live.
+   - For **completed orders** (Delivered / Cancelled): view order details, download Receipt PDF, or click **Customer Detail** to open the customer's full history.
+   - **Receipt PDF** button is always visible on every selected order.
+4. **Customers tab:** view registered users, order counts, contact details. Click **View details** to open full order and payment history. Completed orders in the detail view show a **Receipt PDF** button.
 5. **Payments tab:** view all payment records with method and status.
-6. Use Django admin at `http://127.0.0.1:8000/admin/` for full catalog management.
+6. Click **Export Excel** to download orders, payments, customers, and logs as `.xlsx`.
+7. Use Django admin at `http://127.0.0.1:8000/admin/` for full catalog management.
 
 ---
 
@@ -240,7 +242,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 | POST | `/auth/login/` | — | Login, returns bearer token |
 | POST | `/auth/logout/` | Bearer | Logout |
 | GET | `/auth/me/` | Bearer | Current user profile |
-| POST | `/orders/` | Bearer | Place order |
+| POST | `/orders/` | Bearer (required) | Place order |
 | GET | `/orders/my/` | Bearer | My order history |
 | GET | `/orders/<order_number>/?phone=&pin=` | Bearer (optional) | Track order |
 | POST | `/payments/create-order/` | Bearer | Create Razorpay order (amount from DB) |
@@ -253,6 +255,8 @@ Base URL: `http://127.0.0.1:8000/api/`
 | GET | `/admin/payments/` | Staff | All payment records |
 | GET | `/admin/users/` | Staff | Registered customers |
 | GET | `/admin/users/<id>/` | Staff | Customer detail with orders and payments |
+| GET | `/admin/export/excel/` | Staff | Download full data as `.xlsx` |
+| GET | `/admin/export/receipt/<order_number>/` | Staff | Download order receipt as PDF |
 
 **Auth header:** `Authorization: Bearer <token>`
 
@@ -268,7 +272,7 @@ Base URL: `http://127.0.0.1:8000/api/`
 | Server-side pricing | Order totals calculated from DB prices, never from client input |
 | HMAC signature | Razorpay payments verified with `hmac.compare_digest()` |
 | Order tracking | Requires phone or tracking PIN (or logged-in ownership) |
-| CORS | Restricted to `ANNAI_CORS_ORIGIN` |
+| CORS | Restricted to `ANNAI_CORS_ORIGIN`, handled centrally in middleware only |
 | Input sanitization | Customer fields trimmed and length-limited |
 | Quantity limits | 0.25 kg minimum, 100 kg maximum per line item |
 | Token auth | Bearer tokens stored server-side, cleared on logout |
@@ -286,7 +290,70 @@ Base URL: `http://127.0.0.1:8000/api/`
 
 ---
 
+## Changelog
+
+### Latest Changes
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | Admin | Track Orders tab now has a **customer name dropdown** — select any order by name, grouped into Active and Completed |
+| 2 | Admin | Selected order shows full detail in one card: items, payments, timeline, actions |
+| 3 | Admin | **Active orders** have status dropdown, message box, Send update, Track Live, Cash Received |
+| 4 | Admin | **Completed orders** (Delivered/Cancelled) show Receipt PDF button and Customer Detail button — navigates to that customer's full history |
+| 5 | Admin | **Receipt PDF** button always visible on every selected order in Track Orders tab |
+| 6 | Admin | Customer Detail tab — completed orders now show a Receipt PDF button below each order card |
+| 7 | Admin | Track Live button in order actions navigates to the shop tracking panel with that order active |
+
+### Bug Fixes
+
+| # | Area | Bug | Fix |
+|---|------|-----|-----|
+| 1 | Backend | Duplicate `Access-Control-Allow-Origin` headers caused browsers to block Excel/PDF blob downloads | Removed all manual CORS header setting from views; `SimpleCorsMiddleware` is the single source of truth |
+| 2 | Backend | OPTIONS preflight requests went through the full Django view stack | Middleware now short-circuits OPTIONS and returns 200 immediately |
+| 3 | Backend | `Content-Disposition` header was not exposed, so download filename was ignored | Added `Access-Control-Expose-Headers: Content-Disposition` centrally in middleware |
+| 4 | Backend | `Product.image_url` was a `URLField` which rejects relative paths like `/turmeric.jpg` | Changed to `CharField(max_length=400)` |
+| 5 | Frontend | Excel/PDF downloads were corrupted — `URL.revokeObjectURL()` ran before browser finished reading blob | `downloadAdminFile()` delays revoke by 2 seconds |
+| 6 | Backend | PDF export could return Django HTML 404 pages saved as `.pdf` | Order lookup now returns JSON `{error: ...}` instead of HTML |
+| 7 | Backend | Guest users could place orders via API without logging in | `POST /orders/` now requires a valid bearer token |
+| 8 | Frontend | Online payment (Razorpay) showed "Payment verification failed" after success | Fixed to check `vres.ok && vdata.order` |
+| 9 | Backend | `/payments/verify/` ignored `annai_order_number` from the frontend | Backend now accepts both `order_number` and `annai_order_number` |
+| 10 | Backend | `reportlab` and `openpyxl` not found when Django server started before `pip install` | Must install into `.venv` using `.venv\Scripts\python.exe -m pip install -r requirements.txt` |
+
+---
+
 ## Troubleshooting
+
+### Excel or PDF export fails / file is corrupted
+
+**Symptom:** Alert says "Export failed" or downloaded `.xlsx` / `.pdf` won't open.
+
+**Fix checklist:**
+
+1. Install export libraries **inside the venv** — not system Python:
+   ```bash
+   cd backend
+   .venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+
+2. Verify packages are in the venv:
+   ```bash
+   .venv\Scripts\python.exe -c "import reportlab, openpyxl; print('Both OK')"
+   ```
+
+3. **Restart Django** after installing — the running server must be restarted:
+   ```bash
+   # Press Ctrl+C to stop, then:
+   python manage.py runserver
+   ```
+
+4. Log in with a **staff account** (superuser). Exports require `Authorization: Bearer <token>`.
+
+5. Keep the same host everywhere — use `localhost` or `127.0.0.1` consistently in:
+   - Browser URL
+   - `VITE_API_BASE_URL`
+   - `ANNAI_CORS_ORIGIN`
+
+---
 
 ### SQLite / OneDrive errors
 
@@ -401,6 +468,9 @@ python manage.py makemigrations     # Create new migrations
 python manage.py seed_menu          # Seed product catalog
 python manage.py createsuperuser    # Create admin user
 python manage.py check              # Check for Django errors
+
+# Install packages into venv correctly (Windows)
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ---
@@ -422,3 +492,5 @@ FSSAI Licence No.: **22420308000104**
 - Fresh flour varieties (Ragi, Wheat, Barley, etc.) are priced on request — added to order notes.
 - The React app falls back to local demo mode when the Django API is offline.
 - Django REST Framework is not used — all API views return plain JSON.
+- CORS headers are set centrally in `SimpleCorsMiddleware` only — never duplicated in views.
+- Always install Python packages into the `.venv` using `.venv\Scripts\python.exe -m pip install`, not the system `pip`.
