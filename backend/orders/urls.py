@@ -22,4 +22,6 @@ urlpatterns = [
     path("admin/payments/", views.admin_payments),
     path("admin/users/", views.admin_users),
     path("admin/users/<int:user_id>/", views.admin_user_detail),
+    path("admin/export/excel/", views.admin_export_excel),
+    path("admin/export/receipt/<str:order_number>/", views.admin_export_receipt_pdf),
 ]

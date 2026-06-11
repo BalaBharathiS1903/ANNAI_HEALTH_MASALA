@@ -40,7 +40,7 @@ class Product(models.Model):
     description = models.TextField(blank=True)
     tamil_description = models.TextField(blank=True)
     price_per_kg = models.DecimalField(max_digits=8, decimal_places=2, default=0)
-    image_url = models.URLField(blank=True)
+    image_url = models.CharField(max_length=400, blank=True)
     is_available = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
 
